@@ -372,13 +372,13 @@
 <div id="toast">✅ Saved!</div>
 
 <!-- Google API -->
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://accounts.google.com/gsi/client" async defer onload="initGoogleClient()"></script>
 <script>
 // ══════════════════════════════════════════
 // 🔧 CONFIGURATION — Replace these values!
 // ══════════════════════════════════════════
-const CLIENT_ID   = '1074884824344-m13l27kiq3tl1o196h7usjbfkuo21vr8.apps.googleusercontent.com';       // From Google Cloud Console
-const SHEET_ID    = '1e59uO8ReMxlnS8032vQluIzfDyENTkqUoWbtEnDwtV4';        // From your Google Sheet URL
+const CLIENT_ID   = 'YOUR_CLIENT_ID';       // From Google Cloud Console
+const SHEET_ID    = 'YOUR_SHEET_ID';        // From your Google Sheet URL
 const SHEET_NAME  = 'Topics';               // Sheet tab name
 const SCOPES      = 'https://www.googleapis.com/auth/spreadsheets';
 // ══════════════════════════════════════════
@@ -397,23 +397,52 @@ function updateDate() {
 }
 
 // ── GOOGLE SIGN IN ──
+let tokenClient = null;
+
+function initGoogleClient() {
+  if (CLIENT_ID === 'YOUR_CLIENT_ID') return;
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES + ' https://www.googleapis.com/auth/userinfo.profile',
+    prompt: '',
+    callback: async (resp) => {
+      if (resp.error) { showToast('❌ Sign in failed', true); return; }
+      accessToken = resp.access_token;
+      // Save token expiry time (tokens last 1 hour)
+      localStorage.setItem('ml_token_expiry', Date.now() + 3500 * 1000);
+      await loadUserInfo();
+      showApp();
+      await loadFromSheets();
+      // Auto-refresh token every 55 minutes
+      setInterval(() => silentRefresh(), 55 * 60 * 1000);
+    }
+  });
+
+  // Try silent sign-in on page load if user was previously signed in
+  const savedUser = localStorage.getItem('ml_user');
+  const tokenExpiry = localStorage.getItem('ml_token_expiry');
+  if (savedUser && tokenExpiry) {
+    const user = JSON.parse(savedUser);
+    // Pre-fill UI while refreshing token
+    document.getElementById('user-name').textContent = user.name || 'Teacher';
+    document.getElementById('user-avatar').src = user.picture || '';
+    silentRefresh();
+  }
+}
+
+function silentRefresh() {
+  if (!tokenClient) return;
+  // Request token silently (no popup if user already consented)
+  tokenClient.requestAccessToken({ prompt: '' });
+}
+
 function signIn() {
   if (CLIENT_ID === 'YOUR_CLIENT_ID') {
     alert('⚠️ Setup required!\n\nPlease replace YOUR_CLIENT_ID and YOUR_SHEET_ID in the code.\nSee SETUP_GUIDE.txt for instructions.');
     return;
   }
-  const client = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID,
-    scope: SCOPES + ' https://www.googleapis.com/auth/userinfo.profile',
-    callback: async (resp) => {
-      if (resp.error) { showToast('❌ Sign in failed', true); return; }
-      accessToken = resp.access_token;
-      await loadUserInfo();
-      showApp();
-      await loadFromSheets();
-    }
-  });
-  client.requestAccessToken();
+  // First time — show consent popup
+  tokenClient.requestAccessToken({ prompt: 'consent' });
 }
 
 async function loadUserInfo() {
@@ -422,8 +451,12 @@ async function loadUserInfo() {
       headers: { Authorization: 'Bearer ' + accessToken }
     });
     const u = await r.json();
-    document.getElementById('user-name').textContent = u.given_name || u.name || 'Teacher';
-    document.getElementById('user-avatar').src = u.picture || '';
+    const name = u.given_name || u.name || 'Teacher';
+    const pic  = u.picture || '';
+    document.getElementById('user-name').textContent = name;
+    document.getElementById('user-avatar').src = pic;
+    // Save user info so we can restore UI on next visit
+    localStorage.setItem('ml_user', JSON.stringify({ name, picture: pic }));
   } catch(e) {}
 }
 
@@ -431,6 +464,9 @@ function signOut() {
   if (!confirm('Sign out?')) return;
   accessToken = null;
   entries = [];
+  localStorage.removeItem('ml_user');
+  localStorage.removeItem('ml_token_expiry');
+  google.accounts.oauth2.revoke(accessToken, () => {});
   document.getElementById('app-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
 }
@@ -716,5 +752,4 @@ if ('serviceWorker' in navigator) {
 }
 </script>
 </body>
-
 </html>
