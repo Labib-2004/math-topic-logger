@@ -398,42 +398,58 @@ function updateDate() {
 
 // ── GOOGLE SIGN IN ──
 let tokenClient = null;
+let silentRefreshInterval = null;
 
 function initGoogleClient() {
   if (CLIENT_ID === 'YOUR_CLIENT_ID') return;
+
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES + ' https://www.googleapis.com/auth/userinfo.profile',
-    prompt: '',
     callback: async (resp) => {
-      if (resp.error) { showToast('❌ Sign in failed', true); return; }
+      if (resp.error || !resp.access_token) {
+        // Silent refresh failed — show login screen
+        document.getElementById('login-screen').style.display = 'flex';
+        document.getElementById('app-screen').style.display = 'none';
+        return;
+      }
       accessToken = resp.access_token;
-      // Save token expiry time (tokens last 1 hour)
-      localStorage.setItem('ml_token_expiry', Date.now() + 3500 * 1000);
+      localStorage.setItem('ml_token_expiry', String(Date.now() + 3500 * 1000));
       await loadUserInfo();
       showApp();
       await loadFromSheets();
-      // Auto-refresh token every 55 minutes
-      setInterval(() => silentRefresh(), 55 * 60 * 1000);
+      // Auto-refresh every 55 min
+      if (!silentRefreshInterval) {
+        silentRefreshInterval = setInterval(() => {
+          tokenClient.requestAccessToken({ prompt: '' });
+        }, 55 * 60 * 1000);
+      }
     }
   });
 
-  // Try silent sign-in on page load if user was previously signed in
+  // Check if user was previously signed in
   const savedUser = localStorage.getItem('ml_user');
-  const tokenExpiry = localStorage.getItem('ml_token_expiry');
-  if (savedUser && tokenExpiry) {
-    const user = JSON.parse(savedUser);
-    // Pre-fill UI while refreshing token
-    document.getElementById('user-name').textContent = user.name || 'Teacher';
-    document.getElementById('user-avatar').src = user.picture || '';
-    silentRefresh();
-  }
-}
+  const expiry    = parseInt(localStorage.getItem('ml_token_expiry') || '0');
+  const stillValid = Date.now() < expiry;
 
-function silentRefresh() {
-  if (!tokenClient) return;
-  // Request token silently (no popup if user already consented)
-  tokenClient.requestAccessToken({ prompt: '' });
+  if (savedUser) {
+    // Restore user UI immediately
+    try {
+      const u = JSON.parse(savedUser);
+      document.getElementById('user-name').textContent = u.name || 'Teacher';
+      document.getElementById('user-avatar').src = u.picture || '';
+    } catch(e) {}
+
+    if (stillValid) {
+      // Token might still be alive — try silent refresh (no popup)
+      tokenClient.requestAccessToken({ prompt: '' });
+    } else {
+      // Token definitely expired — silent refresh with no prompt
+      // Google will auto-approve if user already consented before
+      tokenClient.requestAccessToken({ prompt: '' });
+    }
+  }
+  // If no saved user — just show login screen (already visible by default)
 }
 
 function signIn() {
@@ -441,8 +457,8 @@ function signIn() {
     alert('⚠️ Setup required!\n\nPlease replace YOUR_CLIENT_ID and YOUR_SHEET_ID in the code.\nSee SETUP_GUIDE.txt for instructions.');
     return;
   }
-  // First time — show consent popup
-  tokenClient.requestAccessToken({ prompt: 'consent' });
+  // Show full consent popup for first-time login
+  tokenClient.requestAccessToken({ prompt: 'select_account' });
 }
 
 async function loadUserInfo() {
@@ -455,18 +471,20 @@ async function loadUserInfo() {
     const pic  = u.picture || '';
     document.getElementById('user-name').textContent = name;
     document.getElementById('user-avatar').src = pic;
-    // Save user info so we can restore UI on next visit
     localStorage.setItem('ml_user', JSON.stringify({ name, picture: pic }));
   } catch(e) {}
 }
 
 function signOut() {
   if (!confirm('Sign out?')) return;
+  clearInterval(silentRefreshInterval);
+  silentRefreshInterval = null;
+  const token = accessToken;
   accessToken = null;
   entries = [];
   localStorage.removeItem('ml_user');
   localStorage.removeItem('ml_token_expiry');
-  google.accounts.oauth2.revoke(accessToken, () => {});
+  if (token) google.accounts.oauth2.revoke(token, () => {});
   document.getElementById('app-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
 }
@@ -753,4 +771,3 @@ if ('serviceWorker' in navigator) {
 </script>
 </body>
 </html>
-
